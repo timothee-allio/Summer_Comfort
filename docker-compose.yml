@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------
+  # BACKEND: FastAPI & Simulation Engine
+  # ---------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: summer_comfort_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the database so it persists if the container restarts
+      - ./backend/simulation_database.json:/app/simulation_database.json
+    environment:
+      - ENVIRONMENT=production
+    networks:
+      - digital_twin_network
+
+  # ---------------------------------------------------------
+  # FRONTEND: Flutter Web UI served by Nginx
+  # ---------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend/frontend
+      dockerfile: Dockerfile
+    container_name: summer_comfort_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - digital_twin_network
+
+# Define a custom bridge network so the containers can talk to each other
+networks:
+  digital_twin_network:
+    driver: bridge
