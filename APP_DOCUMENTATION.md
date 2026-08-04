@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Paris Summer Comfort Digital Twin is a local web application for exploring
+The Paris Summer Comfort Simulation is a local web application for exploring
 how envelope performance, south-facing glazing, solar shading, and natural
 ventilation affect a dwelling's thermal comfort in a synthetic Paris 2090
 climate. It is a comparative design tool, not a replacement for a validated
