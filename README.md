@@ -13,7 +13,7 @@ This application bridges the gap between academic building science and general p
 ## Tech Stack
 * **Frontend:** [Flutter](https://flutter.dev/) (Dart) compiled to Web for barrier-free educational access.
 * **Backend:** [FastAPI](https://fastapi.tiangolo.com/) (Python) for asynchronous, high-performance data serving.
-* **Physics Engine:** Custom 3R2C RC-network thermal simulation engine solving implicit backward Euler integrations.
+* **Physics Engine:** Custom 3R2C RC-network thermal simulation engine solving implicit backward Euler integrations (Made with Claude).
 
 ## Local Setup & Installation
 
@@ -33,4 +33,4 @@ This application bridges the gap between academic building science and general p
 This tool was developed as part of research into gamification and e-learning tools for building science education. 
 
 **Author:** Timothée ALLIO  
-**Collaborators/Supervisors:** [Add Hicham Johra and others here]
+**Collaborators/Supervisors:** Hicham Johra
