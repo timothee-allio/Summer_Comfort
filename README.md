@@ -1,41 +1,36 @@
-# Paris Summer Comfort Digital Twin
+# Paris Thermal Simulation
 
-A local, interactive thermal model of a single-zone Paris dwelling under future
-climate scenarios. The dashboard lets a user change four building parameters
-and runs a full-year (8,760-hour) dynamic simulation to estimate cooling demand
-and overheating.
+An interactive, web-based educational exploration environment designed to demonstrate the physical principles of summer thermal comfort and overheating mitigation in buildings. 
 
-The application has two independently started parts:
+This application bridges the gap between academic building science and general public awareness. For students and educators, it acts as an interactive environment to test design hypotheses, evaluate real-time thermal performance, and spark discussions around passive cooling. Simultaneously, the tool was explicitly created to counter the prevalent thermal misconceptions observed during the severe 2026 heatwaves. In an era where the building industry's response to climate change is of critical global importance, the app democratizes building physics, translating complex overheating dynamics into accessible common knowledge.
 
-- `frontend/frontend/`: Flutter web dashboard.
-- `backend/`: FastAPI API, weather files, and the NumPy-based physics engine.
+## Features
+* **Interactive 3D Diagram:** A dynamic isometric building representation that scales and reacts in real-time to user inputs (Window-to-Wall Ratio, Overhang Depth, External Shading).
+* **Instantaneous Feedback:** Utilizes an offline surrogate database and constant-time $O(1)$ nearest-neighbor backend lookups to provide instant simulation results without browser timeouts.
+* **Contour Heatmap:** A reactive 2D parameter-sweep visualization allowing users to map optimal combinations for cooling and heating demands.
+* **Exportable Ledger:** Users can track their hypotheses and download full `.csv` ledgers of their simulation runs, including hourly sub-data for deep analysis.
 
-For the full architecture, data flow, API contract, model assumptions, and
-developer instructions, see [APP_DOCUMENTATION.md](APP_DOCUMENTATION.md).
+## Tech Stack
+* **Frontend:** [Flutter](https://flutter.dev/) (Dart) compiled to Web for barrier-free educational access.
+* **Backend:** [FastAPI](https://fastapi.tiangolo.com/) (Python) for asynchronous, high-performance data serving.
+* **Physics Engine:** Custom 3R2C RC-network thermal simulation engine solving implicit backward Euler integrations.
 
-## Run locally
+## Local Setup & Installation
 
-Start the API from the backend directory so its relative weather-file paths
-resolve correctly:
+### Backend (Python)
+1. Navigate to the `backend/` directory.
+2. Create a virtual environment: `python -m venv venv`
+3. Activate the environment and install dependencies: `pip install -r requirements.txt`
+4. Start the FastAPI server: `uvicorn main:app --reload --port 8000`
 
-```powershell
-Set-Location backend
-.\venv\Scripts\Activate.ps1
-uvicorn main:app --reload --port 8000
-```
 
-In another terminal, start the Flutter web app:
+### Frontend (Flutter)
+1. Navigate to the `frontend/` directory.
+2. Install dependencies: `flutter pub get`
+3. Run the application on a local web server: `flutter run -d chrome`
 
-```powershell
-Set-Location frontend\frontend
-flutter run -d chrome
-```
+## Scientific Context
+This tool was developed as part of research into gamification and e-learning tools for building science education. 
 
-The frontend is currently configured to call `http://127.0.0.1:8000`.
-
-## Repository utilities
-
-The root-level scripts are research/batch utilities rather than part of the
-dashboard. `run_simulation.py`, `run_scenarios.py`, and `verify.py` currently
-expect a root-level `weather/` directory, which is not present in this
-checkout; see the notes in the full documentation before using them.
+**Author:** Timothée ALLIO  
+**Collaborators/Supervisors:** [Add Hicham Johra and others here]
