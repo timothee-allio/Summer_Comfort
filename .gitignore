@@ -1,0 +1,11 @@
+# Python / Backend
+__pycache__/
+venv/
+.env
+simulation_database.json  # Optional: ignore this if the JSON is over 50MB, otherwise you can commit it!
+
+# Flutter / Frontend
+.dart_tool/
+build/
+.pub-cache/
+.packages
