@@ -1,4 +1,4 @@
-# Paris Thermal Simulation
+# Year-Round Energy Demand & Overheating Explorer
 
 An interactive, web-based educational exploration environment designed to demonstrate the physical principles of summer thermal comfort and overheating mitigation in buildings. 
 
