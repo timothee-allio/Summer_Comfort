@@ -24,7 +24,7 @@ class SimRequest(BaseModel):
     overhang_depth: float = 0.8
     vent_max_ach: float = 12.0
     external_shading_enabled: bool = False
-    weather_case: str = "2090_heatwave"
+    weather_case: str = "Paris_2090_heatwave"
 
 class HeatmapRequest(BaseModel):
     wall_r: float
@@ -73,7 +73,7 @@ def health_check():
 @app.post("/api/simulate")
 def run_sim(req: SimRequest):
     # Dynamically injects "2050_typical", "2090_heatwave", etc.
-    epw_file = f"weather/FRA_Paris_{req.weather_case}.epw"
+    epw_file = f"weather/FRA_{req.weather_case}.epw"
     
     if not os.path.exists(epw_file):
         return {"error": "Weather file not found"}

@@ -14,7 +14,7 @@ class SummerComfortApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Paris Thermal Simulation',
+      title: 'Year-Round Energy Demand & Overheating Explorer',
       theme: ThemeData(
         primarySwatch: Colors.blueGrey,
         scaffoldBackgroundColor: Colors.grey[100],
@@ -62,7 +62,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double overhangDepth = 0.8;
   double maxVentilation = 12.0;
   bool externalShadingEnabled = false;
-  String selectedScenario = "2090_heatwave";
+  String selectedScenario = "Paris_2090_heatwave";
 
   // Heatmap State
   String mapXAxis = 'globalWindowArea';
@@ -162,7 +162,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final anchor = web.HTMLAnchorElement()
       ..href = url
-      ..download = "paris_${selectedScenario}_simulation.csv";
+      ..download = "${selectedScenario}_simulation.csv";
 
     web.document.body?.append(anchor);
     anchor.click();
@@ -337,7 +337,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Paris Thermal Simulation'),
+        title: const Text(' Year-Round Energy Demand & Overheating Explorer '),
         elevation: 0,
       ),
       body: Row(
@@ -484,20 +484,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       items: const [
                         DropdownMenuItem(
-                          value: '2090_heatwave',
-                          child: Text('Year 2090 with Extreme Heatwave'),
+                          value: 'Paris_2090_heatwave',
+                          child: Text(
+                            'Paris - Year 2090 with Extreme Heatwave',
+                          ),
                         ),
                         DropdownMenuItem(
-                          value: '2090_typical',
-                          child: Text('Year 2090 with Typical Summer'),
+                          value: 'Paris_2090_typical',
+                          child: Text('Paris - Year 2090 with Typical Summer'),
                         ),
                         DropdownMenuItem(
-                          value: '2050_heatwave',
-                          child: Text('Year 2050 with Extreme Heatwave'),
+                          value: 'Paris_2050_heatwave',
+                          child: Text(
+                            'Paris - Year 2050 with Extreme Heatwave',
+                          ),
                         ),
                         DropdownMenuItem(
-                          value: '2050_typical',
-                          child: Text('Year 2050 with Typical Summer'),
+                          value: 'Paris_2050_typical',
+                          child: Text('Paris - Year 2050 with Typical Summer'),
                         ),
                       ],
                       onChanged: (val) {

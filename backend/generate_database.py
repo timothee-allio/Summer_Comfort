@@ -13,7 +13,7 @@ def run_parameter_sweep():
     shading_vals = [False, True]
     
     # 4 distinct scenarios
-    scenarios = ["2050_typical", "2050_heatwave", "2090_typical", "2090_heatwave"]
+    scenarios = ["Paris_2050_typical", "Paris_2050_heatwave", "Paris_2090_typical", "Paris_2090_heatwave"]
     database = {s: {} for s in scenarios}
 
     total_sims = len(r_vals) * len(win_vals) * len(over_vals) * len(vent_vals) * len(shading_vals) * len(scenarios)
@@ -21,7 +21,7 @@ def run_parameter_sweep():
 
     for scenario in scenarios:
         # Maps perfectly to FRA_Paris_2050_typical.epw, etc.
-        epw = f"C:\\Users\\timotheea\\summer_comfort\\backend\\weather\\FRA_Paris_{scenario}.epw"
+        epw = f"C:\\Users\\timotheea\\summer_comfort\\backend\\weather\\FRA_{scenario}.epw"
         
         if not os.path.exists(epw):
             print(f"Warning: {epw} not found, skipping {scenario}...")
