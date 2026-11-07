@@ -6,7 +6,10 @@ import numpy as np
 import json
 import math
 
-from building_sim import Weather, Building, SurfaceDef, WindowDef, simulate, example_house
+from building_sim import Weather, simulate, build_case, weather_path, WEATHER_CASES
+from app_grid import GRID, AXES, SHADING, make_key
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="Summer Comfort Simulation API")
 
@@ -39,29 +42,71 @@ class HeatmapRequest(BaseModel):
 # ---------------------------------------------------------
 # DATABASE LOADING & GLOBAL BOUNDS
 # ---------------------------------------------------------
+# The database (see generate_database.py) is turned into one dense array per
+# weather case and metric, indexed [wallR, window, overhang, ventilation, shading]
+# on the grid of app_grid.py, so that it can be interpolated.
+HEATMAP_RES = 30          # heatmap cells per axis
+
+def load_database(path):
+    with open(path, "r") as f:
+        raw = json.load(f)
+    shape = tuple(len(GRID[a]) for a in AXES) + (len(SHADING),)
+    tables = {}
+    for case, data in raw.items():
+        arrays = {m: np.full(shape, np.nan) for m in ("cool", "heat")}
+        for idx in np.ndindex(shape):
+            vals = [GRID[a][i] for a, i in zip(AXES, idx[:4])] + [SHADING[idx[4]]]
+            entry = data.get(make_key(*vals))
+            if entry is None:
+                raise KeyError(f"{case}: grid point {make_key(*vals)} missing; "
+                               "the database does not match app_grid.py, regenerate it")
+            for m in arrays:
+                arrays[m][idx] = entry[m]
+        tables[case] = arrays
+    return tables
+
 try:
-    with open("simulation_database.json", "r") as f:
-        SIM_DB = json.load(f)
-        
-    bounds = {"cooling": [math.inf, -math.inf], "heating": [math.inf, -math.inf]}
-    for case, data in SIM_DB.items():
-        for key, results in data.items():
-            c, h = results["cool"], results["heat"]
-            if c < bounds["cooling"][0]: bounds["cooling"][0] = c
-            if c > bounds["cooling"][1]: bounds["cooling"][1] = c
-            if h < bounds["heating"][0]: bounds["heating"][0] = h
-            if h > bounds["heating"][1]: bounds["heating"][1] = h
-            
-    if bounds["cooling"][0] == math.inf: bounds["cooling"] = [0.0, 100.0]
-    if bounds["heating"][0] == math.inf: bounds["heating"] = [0.0, 100.0]
-    
-except FileNotFoundError:
+    SIM_DB = load_database(os.path.join(HERE, "simulation_database.json"))
+    bounds = {
+        "cooling": [min(float(t["cool"].min()) for t in SIM_DB.values()),
+                    max(float(t["cool"].max()) for t in SIM_DB.values())],
+        "heating": [min(float(t["heat"].min()) for t in SIM_DB.values()),
+                    max(float(t["heat"].max()) for t in SIM_DB.values())],
+    }
+except (FileNotFoundError, KeyError) as e:
     SIM_DB = {}
     bounds = {"cooling": [0.0, 100.0], "heating": [0.0, 100.0]}
-    print("WARNING: simulation_database.json not found. Run generate_database.py first.")
+    print(f"WARNING: simulation database unavailable ({e}). Run generate_database.py first.")
 
-def get_nearest(val, grid_array):
-    return min(grid_array, key=lambda x: abs(x - val))
+def interpolate(table, points):
+    """Multilinear interpolation of table[..., shade] at points (n, 4), in the
+    order of AXES. Points outside the grid are clamped to its edges."""
+    points = np.atleast_2d(points)
+    n = points.shape[0]
+    lo_idx, w_hi = [], []
+    for k, a in enumerate(AXES):
+        g = GRID[a]
+        x = np.clip(points[:, k], g[0], g[-1])
+        i = np.clip(np.searchsorted(g, x, side="right") - 1, 0, len(g) - 2)
+        lo_idx.append(i)
+        w_hi.append((x - g[i]) / (g[i + 1] - g[i]))
+    result = np.zeros(n)
+    for corner in np.ndindex(*(2,) * len(AXES)):        # 16 corners
+        w = np.ones(n)
+        idx = []
+        for k, c in enumerate(corner):
+            w = w * (w_hi[k] if c else 1.0 - w_hi[k])
+            idx.append(lo_idx[k] + c)
+        result += w * table[tuple(idx)]
+    return result
+
+_WEATHER_CACHE = {}
+
+def get_weather(case):
+    """Parse each EPW file once and keep it (and its sun positions) in memory."""
+    if case not in _WEATHER_CACHE:
+        _WEATHER_CACHE[case] = Weather(weather_path(case))
+    return _WEATHER_CACHE[case]
 
 @app.get("/health")
 def health_check():
@@ -73,30 +118,15 @@ def health_check():
 @app.post("/api/simulate")
 def run_sim(req: SimRequest):
     # Dynamically injects "2050_typical", "2090_heatwave", etc.
-    epw_file = f"weather/FRA_{req.weather_case}.epw"
-    
+    if req.weather_case not in WEATHER_CASES:
+        return {"error": "Weather file not found"}
+    epw_file = weather_path(req.weather_case)
     if not os.path.exists(epw_file):
         return {"error": "Weather file not found"}
 
-    wx = Weather(epw_file)
-    bld = example_house()
-    
-    bld.vent_max_ach = req.vent_max_ach
-    bld.external_shading_enabled = req.external_shading_enabled
-    
-    wall_u_value = 1.0 / req.wall_r if req.wall_r > 0 else 5.0
-    for s in bld.surfaces:
-        if s.name.startswith("wall"):
-            s.U = wall_u_value
-
-    if len(bld.windows) > 0:
-        area_per_window = req.global_window_area / len(bld.windows)
-        for i, w in enumerate(bld.windows):
-            w.area = area_per_window
-            if i == 0:
-                w.overhang_depth = req.overhang_depth
-            else:
-                w.overhang_depth = 0.0
+    wx = get_weather(req.weather_case)
+    bld = build_case(req.wall_r, req.global_window_area, req.overhang_depth,
+                     req.vent_max_ach, req.external_shading_enabled)
 
     res = simulate(bld, wx)
 
@@ -116,62 +146,39 @@ def run_sim(req: SimRequest):
     }
 
 # ---------------------------------------------------------
-# FAST HEATMAP GENERATOR (Database Lookup)
+# FAST HEATMAP GENERATOR (multilinear interpolation of the database)
 # ---------------------------------------------------------
 @app.post("/api/heatmap")
 def generate_heatmap(req: HeatmapRequest):
-    if not SIM_DB:
+    if not SIM_DB or req.weather_case not in SIM_DB:
+        return {"cooling": [], "heating": [], "bounds": bounds}
+    if req.x_axis not in GRID or req.y_axis not in GRID:
         return {"cooling": [], "heating": [], "bounds": bounds}
 
-    grid_r = np.linspace(0.5, 10.0, 5)
-    grid_win = np.linspace(2.0, 60.0, 8)
-    grid_over = np.linspace(0.0, 2.0, 5)
-    grid_vent = np.linspace(0.0, 20.0, 5)
-
-    param_ranges = {
-        "wallR": grid_r,
-        "globalWindowArea": grid_win,
-        "overhang": grid_over,
-        "ventilation": grid_vent
+    current = {
+        "wallR": req.wall_r,
+        "globalWindowArea": req.global_window_area,
+        "overhang": req.overhang_depth,
+        "ventilation": req.vent_max_ach,
     }
+    # Evenly spaced cells over each axis' full range (the app draws them evenly)
+    x_values = np.linspace(GRID[req.x_axis][0], GRID[req.x_axis][-1], HEATMAP_RES)
+    y_values = np.linspace(GRID[req.y_axis][0], GRID[req.y_axis][-1], HEATMAP_RES)
+    xx, yy = np.meshgrid(x_values, y_values, indexing="ij")   # [x][y]
 
-    x_values = param_ranges[req.x_axis]
-    y_values = param_ranges[req.y_axis]
+    points = np.empty((xx.size, len(AXES)))
+    for k, a in enumerate(AXES):
+        points[:, k] = current[a]
+    points[:, AXES.index(req.x_axis)] = xx.ravel()
+    points[:, AXES.index(req.y_axis)] = yy.ravel()
 
-    cooling_matrix = []
-    heating_matrix = []
-    db_case = SIM_DB.get(req.weather_case, {})
-    shade_int = int(req.external_shading_enabled)
-
-    for x_val in x_values:
-        cooling_col = []
-        heating_col = []
-        for y_val in y_values:
-            current_params = {
-                "wallR": req.wall_r,
-                "globalWindowArea": req.global_window_area,
-                "overhang": req.overhang_depth,
-                "ventilation": req.vent_max_ach
-            }
-            current_params[req.x_axis] = x_val
-            current_params[req.y_axis] = y_val
-
-            snap_r = get_nearest(current_params["wallR"], grid_r)
-            snap_win = get_nearest(current_params["globalWindowArea"], grid_win)
-            snap_over = get_nearest(current_params["overhang"], grid_over)
-            snap_vent = get_nearest(current_params["ventilation"], grid_vent)
-
-            key = f"{snap_r:.2f}_{snap_win:.1f}_{snap_over:.2f}_{snap_vent:.1f}_{shade_int}"
-            result = db_case.get(key, {"cool": 0.0, "heat": 0.0})
-            
-            cooling_col.append(result["cool"])
-            heating_col.append(result["heat"])
-
-        cooling_matrix.append(cooling_col)
-        heating_matrix.append(heating_col)
+    shade = int(bool(req.external_shading_enabled))
+    tables = SIM_DB[req.weather_case]
+    cooling = interpolate(tables["cool"][..., shade], points).reshape(xx.shape)
+    heating = interpolate(tables["heat"][..., shade], points).reshape(xx.shape)
 
     return {
-        "cooling": cooling_matrix,
-        "heating": heating_matrix,
-        "bounds": bounds 
+        "cooling": cooling.tolist(),
+        "heating": heating.tolist(),
+        "bounds": bounds
     }

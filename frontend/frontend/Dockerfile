@@ -1,19 +1,21 @@
 # ==========================================
 # STAGE 1: Build the Flutter Web App
 # ==========================================
-FROM debian:bullseye-slim AS build-env
+# Debian 12 (bookworm): Debian 11 (bullseye) is end-of-life and its security
+# mirror no longer serves packages.
+FROM debian:bookworm-slim AS build-env
 
 # Install necessary build tools
 RUN apt-get update && \
-    apt-get install -y curl git unzip && \
+    apt-get install -y --no-install-recommends ca-certificates curl git unzip xz-utils && \
     apt-get clean
 
-# Clone the Flutter repository and add it to the PATH
-RUN git clone https://github.com/flutter/flutter.git /usr/local/flutter
+# Clone only the latest stable Flutter release and add it to the PATH
+RUN git clone --depth 1 -b stable https://github.com/flutter/flutter.git /usr/local/flutter
 ENV PATH="/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}"
 
-# Switch to the stable channel and run flutter doctor to initialize
-RUN flutter channel stable && flutter upgrade && flutter doctor
+# Download the Dart SDK and web artifacts
+RUN flutter config --enable-web && flutter precache --web
 
 # Set the working directory and copy the frontend code
 WORKDIR /app

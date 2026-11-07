@@ -2,7 +2,8 @@
 __pycache__/
 venv/
 .env
-simulation_database.json  # Optional: ignore this if the JSON is over 50MB, otherwise you can commit it!
+# Optional: ignore the database if the JSON is over 50MB, otherwise you can commit it!
+# simulation_database.json
 
 # Flutter / Frontend
 .dart_tool/
@@ -10,3 +11,8 @@ build/
 .pub-cache/
 .packages
 .vscode/
+
+# Local-only files
+_sauvegarde_*/
+*.partial.jsonl
+results/.cache_*.pkl
