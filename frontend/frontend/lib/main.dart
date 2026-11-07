@@ -591,14 +591,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           '${simResults!['summary']['total_heating_kwh']?.toStringAsFixed(0) ?? 0} kWh',
                           Colors.orange,
                         ),
+                        // Comfort without air conditioning: with AC on, the
+                        // temperature is capped at the 26°C setpoint.
                         _buildStatCard(
-                          'Hours > 26°C',
-                          '${simResults!['summary']['hours_above_26'] ?? 0} hrs',
+                          'Hours > 28°C (no AC)',
+                          '${simResults!['summary']['ff_hours_above_28'] ?? 0} hrs',
                           const Color.fromARGB(255, 255, 196, 1),
                         ),
                         _buildStatCard(
-                          'Hours > 28°C',
-                          '${simResults!['summary']['hours_above_28'] ?? 0} hrs',
+                          'Peak Temp. (no AC)',
+                          '${simResults!['summary']['ff_peak_t_op']?.toStringAsFixed(1) ?? '-'} °C',
                           Colors.red,
                         ),
                       ],
@@ -644,6 +646,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     DropdownMenuItem(
                                       value: 'heating',
                                       child: Text('Heating Demand'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'overheating',
+                                      child: Text('Overheating Hours > 28°C (no AC)'),
                                     ),
                                   ],
                                   onChanged: (val) =>
@@ -1133,9 +1139,11 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
   int _requestId = 0; // ignore responses that arrive after a newer request
   List<List<double>>? coolingMatrix;
   List<List<double>>? heatingMatrix;
+  List<List<double>>? overheatingMatrix;
   Map<String, List<double>> globalBounds = {
     'cooling': [0, 100],
     'heating': [0, 100],
+    'overheating': [0, 100],
   };
 
   @override
@@ -1208,12 +1216,23 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
           heatingMatrix = List<List<double>>.from(
             data['heating'].map((x) => List<double>.from(x)),
           );
+          final over = data['overheating'] as List? ?? [];
+          overheatingMatrix = over.isEmpty
+              ? null
+              : List<List<double>>.from(
+                  over.map((x) => List<double>.from(x)),
+                );
           globalBounds['cooling'] = List<double>.from(
             data['bounds']['cooling'],
           );
           globalBounds['heating'] = List<double>.from(
             data['bounds']['heating'],
           );
+          if (data['bounds']['overheating'] != null) {
+            globalBounds['overheating'] = List<double>.from(
+              data['bounds']['overheating'],
+            );
+          }
         });
       }
     } catch (e) {
@@ -1242,12 +1261,14 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
 
   @override
   Widget build(BuildContext context) {
-    final activeMatrix = widget.activeMetric == 'cooling'
-        ? coolingMatrix
-        : heatingMatrix;
-    final activeBounds = widget.activeMetric == 'cooling'
-        ? globalBounds['cooling']!
-        : globalBounds['heating']!;
+    final activeMatrix = switch (widget.activeMetric) {
+      'cooling' => coolingMatrix,
+      'overheating' => overheatingMatrix,
+      _ => heatingMatrix,
+    };
+    final activeBounds =
+        globalBounds[widget.activeMetric] ?? globalBounds['heating']!;
+    final unit = widget.activeMetric == 'overheating' ? 'h' : 'kWh';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1327,7 +1348,7 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              '${activeBounds[0].toStringAsFixed(0)} kWh',
+              '${activeBounds[0].toStringAsFixed(0)} $unit',
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 8),
@@ -1343,7 +1364,7 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
             ),
             const SizedBox(width: 8),
             Text(
-              '${activeBounds[1].toStringAsFixed(0)} kWh',
+              '${activeBounds[1].toStringAsFixed(0)} $unit',
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
             ),
           ],

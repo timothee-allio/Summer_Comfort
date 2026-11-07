@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -47,13 +47,24 @@ class HeatmapRequest(BaseModel):
 # on the grid of app_grid.py, so that it can be interpolated.
 HEATMAP_RES = 30          # heatmap cells per axis
 
+# Heatmap metrics: name used by the app -> key in the database.
+# "overheating" = hours above 28 C operative temperature over the year in the
+# same building WITHOUT air conditioning (free-running), i.e. summer comfort.
+HEATMAP_METRICS = {
+    "cooling": "cool",
+    "heating": "heat",
+    "overheating": "ff_hours_above_28",
+}
+
 def load_database(path):
     with open(path, "r") as f:
         raw = json.load(f)
     shape = tuple(len(GRID[a]) for a in AXES) + (len(SHADING),)
     tables = {}
     for case, data in raw.items():
-        arrays = {m: np.full(shape, np.nan) for m in ("cool", "heat")}
+        sample = next(iter(data.values()))
+        metrics = [m for m in HEATMAP_METRICS.values() if m in sample]
+        arrays = {m: np.full(shape, np.nan) for m in metrics}
         for idx in np.ndindex(shape):
             vals = [GRID[a][i] for a, i in zip(AXES, idx[:4])] + [SHADING[idx[4]]]
             entry = data.get(make_key(*vals))
@@ -68,14 +79,14 @@ def load_database(path):
 try:
     SIM_DB = load_database(os.path.join(HERE, "simulation_database.json"))
     bounds = {
-        "cooling": [min(float(t["cool"].min()) for t in SIM_DB.values()),
-                    max(float(t["cool"].max()) for t in SIM_DB.values())],
-        "heating": [min(float(t["heat"].min()) for t in SIM_DB.values()),
-                    max(float(t["heat"].max()) for t in SIM_DB.values())],
+        name: [min(float(t[key].min()) for t in SIM_DB.values()),
+               max(float(t[key].max()) for t in SIM_DB.values())]
+        for name, key in HEATMAP_METRICS.items()
+        if all(key in t for t in SIM_DB.values())
     }
 except (FileNotFoundError, KeyError) as e:
     SIM_DB = {}
-    bounds = {"cooling": [0.0, 100.0], "heating": [0.0, 100.0]}
+    bounds = {"cooling": [0.0, 100.0], "heating": [0.0, 100.0], "overheating": [0.0, 100.0]}
     print(f"WARNING: simulation database unavailable ({e}). Run generate_database.py first.")
 
 def interpolate(table, points):
@@ -119,16 +130,23 @@ def health_check():
 def run_sim(req: SimRequest):
     # Dynamically injects "2050_typical", "2090_heatwave", etc.
     if req.weather_case not in WEATHER_CASES:
-        return {"error": "Weather file not found"}
-    epw_file = weather_path(req.weather_case)
-    if not os.path.exists(epw_file):
-        return {"error": "Weather file not found"}
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown weather case, expected one of {list(WEATHER_CASES)}")
+    if not os.path.exists(weather_path(req.weather_case)):
+        raise HTTPException(status_code=404, detail="Weather file not found")
 
     wx = get_weather(req.weather_case)
-    bld = build_case(req.wall_r, req.global_window_area, req.overhang_depth,
-                     req.vent_max_ach, req.external_shading_enabled)
+    try:
+        bld = build_case(req.wall_r, req.global_window_area, req.overhang_depth,
+                         req.vent_max_ach, req.external_shading_enabled)
+    except ValueError as e:            # e.g. windows larger than the facade
+        raise HTTPException(status_code=400, detail=str(e))
 
     res = simulate(bld, wx)
+
+    # Same building without air conditioning: summer comfort indicators.
+    bld.cooling_enabled = False
+    t_op_ff = simulate(bld, wx)["t_op"]
 
     return {
         "t_out": res["t_out"].tolist(),
@@ -142,6 +160,9 @@ def run_sim(req: SimRequest):
             "hours_above_26": int((res["t_op"] > 26.0).sum()),
             "hours_above_28": int((res["t_op"] > 28.0).sum()),
             "peak_t_op": float(res["t_op"].max()),
+            "ff_hours_above_26": int((t_op_ff > 26.0).sum()),
+            "ff_hours_above_28": int((t_op_ff > 28.0).sum()),
+            "ff_peak_t_op": float(t_op_ff.max()),
         }
     }
 
@@ -150,10 +171,11 @@ def run_sim(req: SimRequest):
 # ---------------------------------------------------------
 @app.post("/api/heatmap")
 def generate_heatmap(req: HeatmapRequest):
+    empty = {name: [] for name in HEATMAP_METRICS}
     if not SIM_DB or req.weather_case not in SIM_DB:
-        return {"cooling": [], "heating": [], "bounds": bounds}
+        return {**empty, "bounds": bounds}
     if req.x_axis not in GRID or req.y_axis not in GRID:
-        return {"cooling": [], "heating": [], "bounds": bounds}
+        raise HTTPException(status_code=400, detail="Unknown heatmap axis")
 
     current = {
         "wallR": req.wall_r,
@@ -174,11 +196,9 @@ def generate_heatmap(req: HeatmapRequest):
 
     shade = int(bool(req.external_shading_enabled))
     tables = SIM_DB[req.weather_case]
-    cooling = interpolate(tables["cool"][..., shade], points).reshape(xx.shape)
-    heating = interpolate(tables["heat"][..., shade], points).reshape(xx.shape)
-
-    return {
-        "cooling": cooling.tolist(),
-        "heating": heating.tolist(),
-        "bounds": bounds
-    }
+    result = dict(empty)
+    for name, key in HEATMAP_METRICS.items():
+        if key in tables:
+            result[name] = interpolate(tables[key][..., shade], points).reshape(xx.shape).tolist()
+    result["bounds"] = bounds
+    return result

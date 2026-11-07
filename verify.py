@@ -71,4 +71,5 @@ def main():
     return ok
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(0 if main() else 1)   # non-zero exit fails the CI check

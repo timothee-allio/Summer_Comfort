@@ -1,0 +1,58 @@
+# Runs on every push and pull request:
+#  - backend: physics sanity checks of the engine (verify.py) and an API smoke test
+#  - frontend: Flutter static analysis and web build
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt httpx
+      - name: Physics checks (verify.py)
+        run: python verify.py
+      - name: API smoke test
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          import main
+          assert main.SIM_DB, "simulation_database.json could not be loaded"
+          c = TestClient(main.app)
+          r = c.post("/api/simulate", json={})
+          assert r.status_code == 200, r.text
+          s = r.json()["summary"]
+          print("simulate:", s)
+          r = c.post("/api/heatmap", json=dict(
+              wall_r=2.0, global_window_area=20.0, overhang_depth=0.6,
+              vent_max_ach=5.0, external_shading_enabled=False,
+              weather_case="Paris_2090_heatwave", x_axis="wallR", y_axis="ventilation"))
+          assert r.status_code == 200, r.text
+          assert len(r.json()["cooling"]) == main.HEATMAP_RES
+          assert c.post("/api/simulate", json={"weather_case": "nope"}).status_code == 400
+          print("API OK")
+          PY
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
+      - name: Web build
+        run: flutter build web
