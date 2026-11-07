@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'dart:async';
 import 'dart:convert';
 import 'package:web/web.dart' as web;
 import 'dart:js_interop';
@@ -1128,6 +1129,8 @@ class ContourHeatmap extends StatefulWidget {
 
 class _ContourHeatmapState extends State<ContourHeatmap> {
   bool isGenerating = false;
+  Timer? _debounce;
+  int _requestId = 0; // ignore responses that arrive after a newer request
   List<List<double>>? coolingMatrix;
   List<List<double>>? heatingMatrix;
   Map<String, List<double>> globalBounds = {
@@ -1142,21 +1145,42 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
   }
 
   @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  // A parameter shown on an axis only moves the cursor: the map itself
+  // depends on the two other parameters, the shading and the scenario.
+  bool _offAxisChanged(String param, double oldValue, double newValue) =>
+      oldValue != newValue &&
+      param != widget.xAxisLabel &&
+      param != widget.yAxisLabel;
+
+  @override
   void didUpdateWidget(covariant ContourHeatmap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.xAxisLabel != widget.xAxisLabel ||
-        oldWidget.yAxisLabel != widget.yAxisLabel ||
-        oldWidget.baseWallR != widget.baseWallR ||
-        oldWidget.baseGlobalWindowArea != widget.baseGlobalWindowArea ||
-        oldWidget.baseOverhang != widget.baseOverhang ||
-        oldWidget.baseVentilation != widget.baseVentilation ||
+    final axesChanged = oldWidget.xAxisLabel != widget.xAxisLabel ||
+        oldWidget.yAxisLabel != widget.yAxisLabel;
+    final mapChanged = axesChanged ||
+        _offAxisChanged('wallR', oldWidget.baseWallR, widget.baseWallR) ||
+        _offAxisChanged('globalWindowArea', oldWidget.baseGlobalWindowArea,
+            widget.baseGlobalWindowArea) ||
+        _offAxisChanged('overhang', oldWidget.baseOverhang, widget.baseOverhang) ||
+        _offAxisChanged(
+            'ventilation', oldWidget.baseVentilation, widget.baseVentilation) ||
         oldWidget.shadingEnabled != widget.shadingEnabled ||
-        oldWidget.scenario != widget.scenario) {
-      _fetchHeatmapData();
+        oldWidget.scenario != widget.scenario;
+    if (mapChanged) {
+      // Wait until the slider stops moving before asking the API.
+      _debounce?.cancel();
+      _debounce = Timer(const Duration(milliseconds: 250), _fetchHeatmapData);
     }
   }
 
   Future<void> _fetchHeatmapData() async {
+    final requestId = ++_requestId;
+    if (!mounted) return;
     setState(() => isGenerating = true);
     try {
       final response = await http.post(
@@ -1174,6 +1198,7 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
         }),
       );
 
+      if (!mounted || requestId != _requestId) return;
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
@@ -1194,7 +1219,9 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
     } catch (e) {
       debugPrint("Heatmap Error: $e");
     } finally {
-      setState(() => isGenerating = false);
+      if (mounted && requestId == _requestId) {
+        setState(() => isGenerating = false);
+      }
     }
   }
 
@@ -1245,7 +1272,7 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey.shade400, width: 1.5),
                   ),
-                  child: isGenerating || activeMatrix == null
+                  child: activeMatrix == null
                       ? const Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -1285,6 +1312,13 @@ class _ContourHeatmapState extends State<ContourHeatmap> {
             fontWeight: FontWeight.bold,
           ),
           textAlign: TextAlign.center,
+        ),
+
+        // Thin bar while a new map is loading (the previous map stays visible)
+        const SizedBox(height: 4),
+        SizedBox(
+          height: 3,
+          child: isGenerating ? const LinearProgressIndicator() : null,
         ),
 
         // DYNAMIC GRADIENT LEGEND

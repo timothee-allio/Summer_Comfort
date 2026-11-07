@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from backend.building_sim import Weather, example_house, simulate, summarize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WDIR, RDIR = os.path.join(HERE, "weather"), os.path.join(HERE, "results")
+WDIR, RDIR = os.path.join(HERE, "backend", "weather"), os.path.join(HERE, "results")
 
 def ensure_weather():
     files = ["FRA_Paris_2050_typical.epw", "FRA_Paris_2050_heatwave.epw"]

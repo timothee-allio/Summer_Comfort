@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 from backend.building_sim import Weather, Building, SurfaceDef, WindowDef, simulate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WDIR, RDIR = os.path.join(HERE, "weather"), os.path.join(HERE, "results")
+WDIR, RDIR = os.path.join(HERE, "backend", "weather"), os.path.join(HERE, "results")
 
 def house_1980s():
     w, l, h = 15.0, 10.0, 2.7

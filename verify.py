@@ -8,13 +8,14 @@ verify.py — Physics sanity checks for the simulation engine.
 4. Control logic: windows only open when Tout < Tair and Tair > threshold.
 5. Annual energy balance: gains + heating - cooling - envelope - ventilation ~ 0.
 """
-import numpy as np, math, copy
+import numpy as np, math, copy, os
 from backend.building_sim import Weather, example_house, simulate, RHO_CP
 
 def main():
     ok = True
     bld = example_house()
-    wx = Weather("weather/FRA_Paris_2050_typical.epw")
+    wx = Weather(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "backend", "weather", "FRA_Paris_2050_typical.epw"))
 
     # ---- 1. steady-state UA check -----------------------------------------
     UA_op = sum(s.area * s.U for s in bld.surfaces if s.name != "floor")

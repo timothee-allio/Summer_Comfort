@@ -20,7 +20,7 @@ Physics:
   * EPW weather input, hourly output, sub-hourly integration (default 10 min).
 """
 import numpy as np
-import math, csv
+import math, csv, os
 from dataclasses import dataclass, field
 
 RHO_CP = 1.2 * 1005.0    # J/m3K air
@@ -49,6 +49,27 @@ class Weather:
         days = [31,28,31,30,31,30,31,31,30,31,30,31]
         cum = np.cumsum([0] + days)
         self.doy = np.array([cum[self.month[i]-1] + self.day[i] for i in range(8760)])
+
+    def sun_positions(self):
+        """Solar altitude and azimuth (deg) for all 8760 hours, vectorised and
+        cached. Same formulas as sun_position()."""
+        if getattr(self, "_sun_cache", None) is None:
+            doy, hf = self.doy.astype(float), self.hour.astype(float) - 0.5
+            B = 2 * np.pi * (doy - 1 + hf / 24.0) / 365.0
+            decl = 0.006918 - 0.399912*np.cos(B) + 0.070257*np.sin(B) - 0.006758*np.cos(2*B) \
+                   + 0.000907*np.sin(2*B) - 0.002697*np.cos(3*B) + 0.00148*np.sin(3*B)
+            eot = 229.18 * (0.000075 + 0.001868*np.cos(B) - 0.032077*np.sin(B)
+                            - 0.014615*np.cos(2*B) - 0.04089*np.sin(2*B))
+            tsol = hf + (4.0 * (self.lon - 15.0 * self.tz) + eot) / 60.0
+            ha = np.radians(15.0 * (tsol - 12.0))
+            lat = math.radians(self.lat)
+            sin_alt = math.sin(lat)*np.sin(decl) + math.cos(lat)*np.cos(decl)*np.cos(ha)
+            alt = np.arcsin(np.clip(sin_alt, -1, 1))
+            cos_az = (np.sin(decl) - math.sin(lat)*sin_alt) / np.maximum(1e-6, math.cos(lat)*np.cos(alt))
+            az = np.arccos(np.clip(cos_az, -1, 1))
+            az = np.where(ha > 0, 2*np.pi - az, az)
+            self._sun_cache = (np.degrees(alt), np.degrees(az))
+        return self._sun_cache
 
     def sun_position(self, i):
         doy, hf = self.doy[i], self.hour[i] - 0.5
@@ -144,8 +165,66 @@ def example_house():
                     gains_wk=[(p, e) for p, e in zip(people, equip)],
                     gains_we=[(p, e) for p, e in zip(people_we, equip_we)])
 
+# ------------------------------------------------------- app parameters ---
+WEATHER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weather")
+WEATHER_CASES = ("Paris_2050_typical", "Paris_2050_heatwave",
+                 "Paris_2090_typical", "Paris_2090_heatwave")
+
+def weather_path(case):
+    """Absolute path of the EPW file for one of WEATHER_CASES."""
+    if case not in WEATHER_CASES:
+        raise ValueError(f"unknown weather case {case!r}, expected one of {WEATHER_CASES}")
+    return os.path.join(WEATHER_DIR, f"FRA_{case}.epw")
+
+def vent_area_for_ach(ach, volume, opening_height=1.2, dT_ref=3.0, t_avg_k=297.0):
+    """Effective openable area (m2) whose stack-driven flow, with no wind and an
+    indoor-outdoor difference of dT_ref, gives `ach` air changes per hour.
+    Uses the same stack formula as simulate()."""
+    if ach <= 0:
+        return 0.0
+    q_per_m2 = (1.0 / 3.0) * math.sqrt(G * opening_height * dT_ref / t_avg_k)
+    return ach * volume / 3600.0 / q_per_m2
+
+def build_case(wall_r, window_area, overhang_depth, vent_max_ach, external_shading):
+    """Building used by the web app and by generate_database.py.
+
+    Starts from example_house() and applies the five app parameters:
+      wall_r            wall thermal resistance (m2K/W), U = 1/R
+      window_area       total glazing (m2), split equally over the four facades;
+                        each wall's opaque area is reduced accordingly so the
+                        gross facade area stays constant
+      overhang_depth    overhang (m) above the south window only
+      vent_max_ach      night ventilation (ACH): sets both the cap and the
+                        openable area, so the value is actually reachable
+      external_shading  temperature-controlled blinds on east/west windows
+    """
+    bld = example_house()
+    bld.vent_max_ach = vent_max_ach
+    bld.vent_open_area = vent_area_for_ach(vent_max_ach, bld.volume(),
+                                           bld.vent_opening_height)
+    bld.external_shading_enabled = bool(external_shading)
+
+    u_wall = 1.0 / wall_r if wall_r > 0 else 5.0
+    walls = {s.azimuth: s for s in bld.surfaces if s.name.startswith("wall")}
+    for s in walls.values():
+        s.U = u_wall
+
+    per_window = window_area / len(bld.windows)
+    for w in bld.windows:
+        wall = walls[w.azimuth]
+        gross = wall.area + w.area
+        if per_window >= gross:
+            raise ValueError(f"window area {per_window:.1f} m2 does not fit in the "
+                             f"{gross:.1f} m2 facade facing {w.azimuth:.0f} deg")
+        wall.area = gross - per_window
+        w.area = per_window
+        w.overhang_depth = overhang_depth if abs(w.azimuth - 180.0) < 1e-6 else 0.0
+    return bld
+
 # ------------------------------------------------------------------ solar ---
 def incident_and_transmitted(bld, wx):
+    """Hourly sol-air terms per surface and transmitted solar gains per window.
+    Vectorised over the 8760 hours (same equations as the original loop)."""
     n = 8760
     ns = len(bld.surfaces)
     q_solair_extra = np.zeros((ns, n))
@@ -153,45 +232,41 @@ def incident_and_transmitted(bld, wx):
     # applied during the sub-hourly zone solve, after the current indoor
     # temperature is known.
     q_win = np.zeros((len(bld.windows), n))
-    shade_frac_log = np.zeros(n)
     HO = 25.0
     albedo = 0.2
-    for i in range(n):
-        ghi, dni, dhi = wx.ghi[i], wx.dni[i], wx.dhi[i]
-        alt, az_sun = wx.sun_position(i)
-        sun_up = alt > 0.5 and ghi > 1
-        for s_idx, s in enumerate(bld.surfaces):
-            if s.name == "floor":
-                continue
-            tilt = math.radians(s.tilt)
-            if sun_up:
-                cosi = _cos_incidence(alt, az_sun, s.tilt, s.azimuth)
-                itot = dni * max(0.0, cosi) + dhi * (1 + math.cos(tilt)) / 2 \
-                       + ghi * albedo * (1 - math.cos(tilt)) / 2
-            else:
-                itot = 0.0
-            lw = 3.9 if s.tilt < 45 else 0.5
-            q_solair_extra[s_idx, i] = s.absorptivity * itot / HO - lw
-        if sun_up:
-            tot, nsh, fsh = 0.0, 0, 0.0
-            for w_idx, wdef in enumerate(bld.windows):
-                cosi = _cos_incidence(alt, az_sun, 90.0, wdef.azimuth)
-                f_beam = 1.0
-                if wdef.overhang_depth > 0 and cosi > 0:
-                    gamma = math.radians(abs(((az_sun - wdef.azimuth) + 180) % 360 - 180))
-                    if gamma < math.pi / 2:
-                        tan_prof = math.tan(math.radians(alt)) / max(math.cos(gamma), 1e-3)
-                        shadow = wdef.overhang_depth * tan_prof - wdef.overhang_gap
-                        f_beam = float(np.clip(1.0 - shadow / wdef.height, 0.0, 1.0))
-                    nsh += 1; fsh += 1 - f_beam
-                ib = dni * max(0.0, cosi) * f_beam
-                idf = dhi * 0.5 * (0.85 if wdef.overhang_depth > 0 else 1.0)
-                ig = ghi * albedo * 0.5
-                iam = max(0.0, 1 - 0.25 * (1 / max(cosi, 0.35) - 1)) if cosi > 0 else 0.9
-                transmitted = wdef.area * wdef.shgc * (ib * iam + 0.9 * (idf + ig))
-                q_win[w_idx, i] = transmitted
-                tot += transmitted
-            shade_frac_log[i] = fsh / nsh if nsh else 0.0
+    ghi, dni, dhi = wx.ghi[:n], wx.dni[:n], wx.dhi[:n]
+    alt, az_sun = wx.sun_positions()
+    sun_up = (alt > 0.5) & (ghi > 1)
+    for s_idx, s in enumerate(bld.surfaces):
+        if s.name == "floor":
+            continue
+        tilt = math.radians(s.tilt)
+        cosi = _cos_incidence(alt, az_sun, s.tilt, s.azimuth)
+        itot = dni * np.maximum(0.0, cosi) + dhi * (1 + math.cos(tilt)) / 2 \
+               + ghi * albedo * (1 - math.cos(tilt)) / 2
+        itot = np.where(sun_up, itot, 0.0)
+        lw = 3.9 if s.tilt < 45 else 0.5
+        q_solair_extra[s_idx] = s.absorptivity * itot / HO - lw
+    nsh = np.zeros(n); fsh = np.zeros(n)
+    for w_idx, wdef in enumerate(bld.windows):
+        cosi = _cos_incidence(alt, az_sun, 90.0, wdef.azimuth)
+        f_beam = np.ones(n)
+        if wdef.overhang_depth > 0:
+            lit = cosi > 0
+            gamma = np.radians(np.abs(np.mod((az_sun - wdef.azimuth) + 180, 360) - 180))
+            front = lit & (gamma < np.pi / 2)
+            tan_prof = np.tan(np.radians(alt)) / np.maximum(np.cos(gamma), 1e-3)
+            shadow = wdef.overhang_depth * tan_prof - wdef.overhang_gap
+            f_beam = np.where(front, np.clip(1.0 - shadow / wdef.height, 0.0, 1.0), 1.0)
+            nsh += lit; fsh += np.where(lit, 1 - f_beam, 0.0)
+        ib = dni * np.maximum(0.0, cosi) * f_beam
+        idf = dhi * 0.5 * (0.85 if wdef.overhang_depth > 0 else 1.0)
+        ig = ghi * albedo * 0.5
+        iam = np.where(cosi > 0,
+                       np.maximum(0.0, 1 - 0.25 * (1 / np.maximum(cosi, 0.35) - 1)), 0.9)
+        transmitted = wdef.area * wdef.shgc * (ib * iam + 0.9 * (idf + ig))
+        q_win[w_idx] = np.where(sun_up, transmitted, 0.0)
+    shade_frac_log = np.where(sun_up & (nsh > 0), fsh / np.maximum(nsh, 1), 0.0)
     return q_solair_extra, q_win, shade_frac_log
 
 def _is_east_or_west(azimuth):
@@ -200,11 +275,12 @@ def _is_east_or_west(azimuth):
     return abs(direction - 90.0) < 1e-6 or abs(direction - 270.0) < 1e-6
 
 def _cos_incidence(alt_deg, az_sun_deg, tilt_deg, az_surf_deg):
-    alt, azs = math.radians(alt_deg), math.radians(az_sun_deg)
+    """Cosine of the incidence angle; accepts scalars or numpy arrays."""
+    alt, azs = np.radians(alt_deg), np.radians(az_sun_deg)
     t, a = math.radians(tilt_deg), math.radians(az_surf_deg)
-    sv = (math.cos(alt) * math.sin(azs), math.cos(alt) * math.cos(azs), math.sin(alt))
-    nv = (math.sin(t) * math.sin(a), math.sin(t) * math.cos(a), math.cos(t))
-    return sum(x * y for x, y in zip(sv, nv))
+    return (np.cos(alt) * np.sin(azs) * math.sin(t) * math.sin(a)
+            + np.cos(alt) * np.cos(azs) * math.sin(t) * math.cos(a)
+            + np.sin(alt) * math.cos(t))
 
 # -------------------------------------------------------------- simulator ---
 def simulate(bld: Building, wx: Weather, dt=600.0, t_init=20.0):
@@ -258,27 +334,52 @@ def simulate(bld: Building, wx: Weather, dt=600.0, t_init=20.0):
     balance_in, balance_out = 0.0, 0.0
     cs = bld.cool_setpoint
 
+    # The system matrix only changes through H_ve on the (AIR, AIR) entry:
+    #   A = A0 + H_ve * e_air e_air^T,  A0 = diag(C/dt) + K0  (constant).
+    # Invert A0 once and handle H_ve with the Sherman-Morrison formula.
+    # HVAC is a heat input q at the air node, so T(q) = T(0) + q * A^-1 e_air,
+    # which gives the load needed to hold a setpoint in closed form. This is
+    # algebraically identical to solving the full system at every sub-step.
+    C_dt = C / dt
+    A0inv = np.linalg.inv(np.diag(C_dt) + K0)
+    u = A0inv[:, AIR].copy()
+    u_a = u[AIR]
+
+    # Envelope boundary terms for every hour (constant within the hour).
+    floor_mask = np.array([s.name == "floor" for s in bld.surfaces])
+    t_gnd_h = np.array(wx.t_ground_month)[wx.month - 1]
+    b_env = np.zeros((8760, nn))
+    for k, s in enumerate(bld.surfaces):
+        n1 = 2 + 2*k
+        if floor_mask[k]:
+            b_env[:, n1] = K_out_gnd[n1] * t_gnd_h
+        else:
+            b_env[:, n1] = K_out_amb[n1] * (wx.t_out[:8760] + q_solair_extra[k])
+    q_sol_all = q_win_solar.sum(axis=0)
+    q_sol_ew = (q_win_solar[east_west_window_indices].sum(axis=0)
+                if east_west_window_indices else np.zeros(8760))
+    f_sol, f_int = bld.solar_to_air_frac, bld.gains_to_air_frac
+    vol = bld.volume()
+    H_fixed_ach = bld.mech_vent_ach
+    shade_on = bld.external_shading_enabled and bool(east_west_window_indices)
+
     for h in range(8760):
         t_out = wx.t_out[h]
-        t_gnd = wx.t_ground_month[wx.month[h] - 1]
         wind = wx.wind[h]
         dow = ((wx.doy[h] - 1) % 7)
         weekend = dow in (0, 6)
         p_gain, e_gain = (bld.gains_we if weekend else bld.gains_wk)[wx.hour[h] - 1]
         q_int = p_gain + e_gain
         ach_inf = bld.ach_infiltration + bld.ach_wind_coeff * wind
+        b_h = b_env[h]
 
         qh_h = qc_h = 0.0; ach_v_h = qsol_h = shade_active_h = 0.0
         for sub in range(nsub):
             t_air = T[AIR]
-            q_sol = q_win_solar[:, h].sum()
-            external_shade_active = (
-                bld.external_shading_enabled
-                and t_air > bld.external_shading_setpoint
-                and bool(east_west_window_indices)
-            )
+            q_sol = q_sol_all[h]
+            external_shade_active = shade_on and t_air > bld.external_shading_setpoint
             if external_shade_active:
-                q_sol -= bld.external_shading_reduction * q_win_solar[east_west_window_indices, h].sum()
+                q_sol -= bld.external_shading_reduction * q_sol_ew[h]
             # --- window rule: free cooling with max opening; closed if Tout >= cs
             if win_open:
                 if t_air < cs - 1.5 or t_out > cs - 0.2:
@@ -294,37 +395,28 @@ def simulate(bld: Building, wx: Weather, dt=600.0, t_init=20.0):
                     G * bld.vent_opening_height * dT / t_avg)
                 q_wind = 0.025 * bld.vent_open_area * wind
                 q_v = math.sqrt(q_stack**2 + q_wind**2)
-                ach_v = min(q_v * 3600.0 / bld.volume(), bld.vent_max_ach)
+                ach_v = min(q_v * 3600.0 / vol, bld.vent_max_ach)
 
-            H_ve = RHO_CP * (ach_inf + ach_v + bld.mech_vent_ach) * bld.volume() / 3600.0
+            H_ve = RHO_CP * (ach_inf + ach_v + H_fixed_ach) * vol / 3600.0
 
-            Km = K0.copy()
-            Km[AIR, AIR] += H_ve
-            b = np.zeros(nn)
-            b[AIR] += (UA_win + H_ve) * t_out
-            b[AIR] += bld.solar_to_air_frac * q_sol + bld.gains_to_air_frac * q_int
-            b[IM] += (1 - bld.solar_to_air_frac) * q_sol + (1 - bld.gains_to_air_frac) * q_int
-            for k, s in enumerate(bld.surfaces):
-                n1 = 2 + 2*k
-                if s.name == "floor":
-                    b[n1] += K_out_gnd[n1] * t_gnd
-                else:
-                    b[n1] += K_out_amb[n1] * (t_out + q_solair_extra[k, h])
+            rhs = C_dt * T + b_h
+            rhs[AIR] += (UA_win + H_ve) * t_out + f_sol * q_sol + f_int * q_int
+            rhs[IM] += (1 - f_sol) * q_sol + (1 - f_int) * q_int
 
-            A = np.diag(C / dt) + Km
-            rhs = C / dt * T + b
-            T_new = np.linalg.solve(A, rhs)
+            y = A0inv @ rhs
+            denom = 1.0 + H_ve * u_a
+            col = u / denom                       # A^-1 e_air
+            T_new = y - (H_ve * y[AIR] / denom) * u   # A^-1 rhs
 
             q_hvac = 0.0
             if T_new[AIR] < bld.heat_setpoint:
-                q_hvac = _pinned_load(A, rhs, AIR, bld.heat_setpoint)
+                q_hvac = (bld.heat_setpoint - T_new[AIR]) / col[AIR]
                 q_hvac = min(q_hvac, bld.heat_capacity_w)
             elif bld.cooling_enabled and T_new[AIR] > cs:
-                q_hvac = _pinned_load(A, rhs, AIR, cs)
+                q_hvac = (cs - T_new[AIR]) / col[AIR]
                 q_hvac = max(q_hvac, -bld.cool_capacity_w)
             if q_hvac != 0.0:
-                rhs2 = rhs.copy(); rhs2[AIR] += q_hvac
-                T_new = np.linalg.solve(A, rhs2)
+                T_new = T_new + q_hvac * col
 
             T = T_new
             qh_h += max(q_hvac, 0) * dt; qc_h += max(-q_hvac, 0) * dt
