@@ -24,7 +24,7 @@ void main() {
 }
 
 class _CounterApp extends StatefulWidget {
-  const _CounterApp({super.key});
+  const _CounterApp();
 
   @override
   State<_CounterApp> createState() => _CounterAppState();
