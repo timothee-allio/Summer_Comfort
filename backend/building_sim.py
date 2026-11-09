@@ -270,9 +270,11 @@ def incident_and_transmitted(bld, wx):
     return q_solair_extra, q_win, shade_frac_log
 
 def _is_east_or_west(azimuth):
-    """True for a vertical window facing due east or due west."""
+    """True for a vertical window facing east or west, i.e. within 45 deg of
+    due east (90) or due west (270). South- and north-facing windows
+    (within 45 deg of 180 or 0) are excluded."""
     direction = azimuth % 360.0
-    return abs(direction - 90.0) < 1e-6 or abs(direction - 270.0) < 1e-6
+    return abs(direction - 90.0) < 45.0 or abs(direction - 270.0) < 45.0
 
 def _cos_incidence(alt_deg, az_sun_deg, tilt_deg, az_surf_deg):
     """Cosine of the incidence angle; accepts scalars or numpy arrays."""
@@ -323,6 +325,10 @@ def simulate(bld: Building, wx: Weather, dt=600.0, t_init=20.0):
         K0[nidx, nidx] += K_out_amb[nidx] + K_out_gnd[nidx]
 
     fan_w = bld.fan_sfp * bld.mech_vent_ach * bld.volume() / 3600.0
+    # Buildings created without occupancy profiles have no internal gains.
+    no_gains = [(0.0, 0.0)] * 24
+    gains_wk = bld.gains_wk if bld.gains_wk is not None else no_gains
+    gains_we = bld.gains_we if bld.gains_we is not None else no_gains
 
     T = np.full(nn, t_init, float)
     win_open = False
@@ -368,7 +374,7 @@ def simulate(bld: Building, wx: Weather, dt=600.0, t_init=20.0):
         wind = wx.wind[h]
         dow = ((wx.doy[h] - 1) % 7)
         weekend = dow in (0, 6)
-        p_gain, e_gain = (bld.gains_we if weekend else bld.gains_wk)[wx.hour[h] - 1]
+        p_gain, e_gain = (gains_we if weekend else gains_wk)[wx.hour[h] - 1]
         q_int = p_gain + e_gain
         ach_inf = bld.ach_infiltration + bld.ach_wind_coeff * wind
         b_h = b_env[h]

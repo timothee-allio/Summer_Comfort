@@ -10,8 +10,15 @@ simulations, and writes simulation_database.json, read by main.py.
   simulation_database.partial.jsonl; if the run stops, launching it again
   skips what is already done. The partial file is removed at the end.
 
-Each entry stores the annual cooling and heating demand (kWh) used by the app,
-plus comfort metrics from the same run (operative temperature).
+Each grid point is simulated twice:
+  * with air conditioning (as in the app): annual cooling and heating demand
+    (kWh) and comfort metrics of that run (operative temperature);
+  * free-running, i.e. without air conditioning: hours above 26 / 28 C and
+    peak operative temperature (keys prefixed "ff_"). This is where summer
+    comfort, and the effect of shading and ventilation, actually shows.
+
+--free-float-only adds the free-running metrics to an existing database
+without recomputing the air-conditioned runs.
 """
 import json
 import os
@@ -47,19 +54,39 @@ def all_jobs():
 _WEATHER = {}
 
 
+_FREE_FLOAT_ONLY = False
+
+
+def _init_worker(free_float_only):
+    global _FREE_FLOAT_ONLY
+    _FREE_FLOAT_ONLY = free_float_only
+
+
 def run_one(job):
     scenario, r, win, over, vent, shade = job
     if scenario not in _WEATHER:                       # one parse per worker
         _WEATHER[scenario] = Weather(weather_path(scenario))
-    res = simulate(build_case(r, win, over, vent, shade), _WEATHER[scenario])
-    t_op = res["t_op"]
-    return scenario, make_key(r, win, over, vent, shade), {
-        "cool": float(res["q_cool"].sum() / 1000.0),
-        "heat": float(res["q_heat"].sum() / 1000.0),
-        "hours_above_26": int((t_op > 26.0).sum()),
-        "hours_above_28": int((t_op > 28.0).sum()),
-        "peak_t_op": float(t_op.max()),
-    }
+    wx = _WEATHER[scenario]
+    out = {}
+    if not _FREE_FLOAT_ONLY:
+        res = simulate(build_case(r, win, over, vent, shade), wx)
+        t_op = res["t_op"]
+        out.update({
+            "cool": float(res["q_cool"].sum() / 1000.0),
+            "heat": float(res["q_heat"].sum() / 1000.0),
+            "hours_above_26": int((t_op > 26.0).sum()),
+            "hours_above_28": int((t_op > 28.0).sum()),
+            "peak_t_op": float(t_op.max()),
+        })
+    bld = build_case(r, win, over, vent, shade)
+    bld.cooling_enabled = False                        # free-running summer
+    t_op = simulate(bld, wx)["t_op"]
+    out.update({
+        "ff_hours_above_26": int((t_op > 26.0).sum()),
+        "ff_hours_above_28": int((t_op > 28.0).sum()),
+        "ff_peak_t_op": float(t_op.max()),
+    })
+    return scenario, make_key(r, win, over, vent, shade), out
 
 
 def load_partial():
@@ -75,12 +102,16 @@ def load_partial():
     return done
 
 
-def run_parameter_sweep(workers=None):
+def run_parameter_sweep(workers=None, free_float_only=False):
     for scenario in WEATHER_CASES:
         if not os.path.exists(weather_path(scenario)):
             raise FileNotFoundError(f"{weather_path(scenario)} not found: run weather_gen.py first")
 
     jobs = list(all_jobs())
+    existing = {}
+    if free_float_only:
+        with open(OUT) as f:
+            existing = json.load(f)
     done = load_partial()
     todo = [j for j in jobs if (j[0], make_key(*j[1:])) not in done]
     workers = workers or os.cpu_count() or 1
@@ -88,7 +119,7 @@ def run_parameter_sweep(workers=None):
           f"on {workers} worker(s).", flush=True)
 
     t0 = time.time()
-    with open(PARTIAL, "a") as part, Pool(workers) as pool:
+    with open(PARTIAL, "a") as part, Pool(workers, _init_worker, (free_float_only,)) as pool:
         for i, (scenario, key, val) in enumerate(pool.imap_unordered(run_one, todo, chunksize=4), 1):
             done[(scenario, key)] = val
             part.write(json.dumps([scenario, key, val]) + "\n")
@@ -102,7 +133,9 @@ def run_parameter_sweep(workers=None):
     database = {s: {} for s in WEATHER_CASES}
     for scenario, r, win, over, vent, shade in jobs:         # stable key order
         key = make_key(r, win, over, vent, shade)
-        database[scenario][key] = done[(scenario, key)]
+        entry = dict(existing.get(scenario, {}).get(key, {}))
+        entry.update(done[(scenario, key)])
+        database[scenario][key] = entry
 
     with open(OUT, "w") as f:
         json.dump(database, f)
@@ -115,4 +148,4 @@ def run_parameter_sweep(workers=None):
 
 if __name__ == "__main__":
     n = int(sys.argv[sys.argv.index("--workers") + 1]) if "--workers" in sys.argv else None
-    run_parameter_sweep(n)
+    run_parameter_sweep(n, free_float_only="--free-float-only" in sys.argv)
