@@ -48,12 +48,14 @@ class HeatmapRequest(BaseModel):
 HEATMAP_RES = 30          # heatmap cells per axis
 
 # Heatmap metrics: name used by the app -> key in the database.
-# "overheating" = hours above 28 C operative temperature over the year in the
-# same building WITHOUT air conditioning (free-running), i.e. summer comfort.
+# "overheating" / "overheating26" = hours above 28 / 26 C operative temperature
+# over the year in the same building WITHOUT air conditioning (free-running),
+# i.e. summer comfort.
 HEATMAP_METRICS = {
     "cooling": "cool",
     "heating": "heat",
     "overheating": "ff_hours_above_28",
+    "overheating26": "ff_hours_above_26",
 }
 
 def load_database(path):
@@ -86,7 +88,7 @@ try:
     }
 except (FileNotFoundError, KeyError) as e:
     SIM_DB = {}
-    bounds = {"cooling": [0.0, 100.0], "heating": [0.0, 100.0], "overheating": [0.0, 100.0]}
+    bounds = {name: [0.0, 100.0] for name in HEATMAP_METRICS}
     print(f"WARNING: simulation database unavailable ({e}). Run generate_database.py first.")
 
 def interpolate(table, points):

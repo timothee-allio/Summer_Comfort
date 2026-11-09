@@ -30,11 +30,15 @@ two-column Flutter Material dashboard:
 - The left panel exposes the design parameters: wall R-value, total window
   area (split equally over the four facades), south overhang depth, night
   ventilation rate (ACH), external east/west shading, and the weather case.
-- **Run Simulation** sends them to `/api/simulate` and shows total cooling and
-  heating demand, plus overheating hours above 28 °C and the peak operative
-  temperature of the same house without air conditioning.
-- The heatmap shows cooling demand, heating demand or overheating hours over
-  any two parameters. Moving a slider of an axis parameter only moves the
+- An **Air Conditioning** switch selects the view. ON (energy view): ideal
+  cooling holds 26 °C, and the results show cooling and heating demand, hours
+  above 26 °C and peak operative temperature. OFF (comfort view): the same
+  house without cooling, showing hours above 26 °C and 28 °C, peak operative
+  temperature and heating demand.
+- **Run Simulation** sends the parameters to `/api/simulate`, which returns
+  both runs; the switch only changes what is displayed.
+- The heatmap shows, over any two parameters, cooling or heating demand (AC on)
+  or overheating hours above 28 / 26 °C (AC off). Moving a slider of an axis parameter only moves the
   cursor; other changes reload the map once the slider stops moving.
 
 The HTTP base URL is hard-coded as `http://127.0.0.1:8000`, so the dashboard is
@@ -74,7 +78,8 @@ The response contains hourly arrays (`t_out`, `t_air`, `t_op`, `q_cool`,
 
 `/api/heatmap` takes the same parameters plus `x_axis` and `y_axis` (any two of
 `wallR`, `globalWindowArea`, `overhang`, `ventilation`) and returns the
-`cooling`, `heating` and `overheating` matrices with global colour-scale
+`cooling`, `heating`, `overheating` (hours > 28 °C without AC) and
+`overheating26` (hours > 26 °C without AC) matrices with global colour-scale
 `bounds`.
 
 ## What happens when a simulation runs
